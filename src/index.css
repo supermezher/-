@@ -1,0 +1,124 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-quran: 'Amiri Quran', 'Amiri', serif;
+    --font-naskh: 'Noto Naskh Arabic', serif;
+    --font-cairo: 'Cairo', sans-serif;
+    --font-kufi: 'Reem Kufi', sans-serif;
+  }
+
+  body {
+    font-family: var(--font-cairo);
+    background-color: #0b1117;
+    color: #e2e8f0;
+    overflow-x: hidden;
+  }
+}
+
+.font-quran {
+  font-family: 'Amiri Quran', 'Amiri', serif;
+  line-height: 2.5;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.font-naskh {
+  font-family: 'Noto Naskh Arabic', 'Amiri', serif;
+}
+
+.font-kufi {
+  font-family: 'Reem Kufi', sans-serif;
+}
+
+/* Custom Scrollbar for Quran reader */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.3);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.6);
+}
+
+/* Tajweed standard highlighting classes */
+.tajweed-ghunnah {
+  color: #10b981; /* Green for Ghunnah */
+  font-weight: 600;
+}
+
+.tajweed-ikhfa {
+  color: #f59e0b; /* Amber for Ikhfa */
+  font-weight: 600;
+}
+
+.tajweed-idgham {
+  color: #06b6d4; /* Cyan for Idgham */
+  font-weight: 600;
+}
+
+.tajweed-qalqalah {
+  color: #38bdf8; /* Sky blue for Qalqalah */
+  font-weight: 700;
+}
+
+.tajweed-madd-wajib {
+  color: #f43f5e; /* Rose/Red for Madd 4-5 */
+  font-weight: 700;
+}
+
+.tajweed-madd-lazim {
+  color: #a855f7; /* Purple for Madd Lazim 6 */
+  font-weight: 800;
+}
+
+.tajweed-madd-tabeei {
+  color: #eab308; /* Yellow-amber */
+  font-weight: 500;
+}
+
+.tajweed-tafkheem {
+  color: #60a5fa; /* Blue for Heavy letters */
+  font-weight: 600;
+}
+
+/* Page Paper Texture for Mus'haf Mode */
+.mushaf-paper-light {
+  background-color: #fbf7ee;
+  color: #1c1917;
+}
+
+.mushaf-paper-sepia {
+  background-color: #f4eedb;
+  color: #292524;
+}
+
+.mushaf-paper-dark {
+  background-color: #0d151c;
+  color: #f1f5f9;
+}
+
+.mushaf-paper-emerald {
+  background-color: #061914;
+  color: #e6f7f2;
+}
+
+/* Verse end symbol styling */
+.ayah-end-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  vertical-align: middle;
+  margin: 0 4px;
+  user-select: none;
+}
