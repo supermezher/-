@@ -57,23 +57,80 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
   const [isAutoScrollPaused, setIsAutoScrollPaused] = useState<boolean>(false);
   const [scrollMode, setScrollMode] = useState<'reciter-sync' | 'manual-speed'>('reciter-sync');
   const [autoScrollSpeed, setAutoScrollSpeed] = useState<number>(2); // 1 to 5
-  const [pauseAtAyahEnds, setPauseAtAyahEnds] = useState<boolean>(true);
+  const [pauseAtAyahEnds, setPauseAtAyahEnds] = useState<boolean>(false); // Continuous smooth scrolling without stopping at ayah ends
   const [isPausedAtAyah, setIsPausedAtAyah] = useState<boolean>(false);
   const [pausedAyahNumber, setPausedAyahNumber] = useState<number | null>(null);
   const pausedAyahsHistory = useRef<Set<number>>(new Set());
+
+  // Subpixel floating accumulator for smooth scrolling at all speeds (1x to 5x)
+  const preciseScrollTop = useRef<number>(0);
+  const isTouchActive = useRef<boolean>(false);
 
   // Touch & Gesture Guard (stops scroller from fighting user's thumb or mouse wheel)
   const [isUserInteracting, setIsUserInteracting] = useState<boolean>(false);
   const interactionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handleUserInteraction = () => {
-    setIsUserInteracting(true);
-    if (interactionTimeoutRef.current) {
-      clearTimeout(interactionTimeoutRef.current);
+  // Synchronize precise scroll accumulator whenever container, surah, or mode changes
+  useEffect(() => {
+    if (containerRef.current) {
+      preciseScrollTop.current = containerRef.current.scrollTop;
     }
+  }, [surahData.meta.number, isAutoScrolling, autoScrollSpeed]);
+
+  // Touch & Gesture Handlers: full manual control up & down without fighting
+  const handleTouchStart = () => {
+    isTouchActive.current = true;
+    setIsUserInteracting(true);
+    if (interactionTimeoutRef.current) clearTimeout(interactionTimeoutRef.current);
+    if (containerRef.current) {
+      preciseScrollTop.current = containerRef.current.scrollTop;
+    }
+  };
+
+  const handleTouchMove = () => {
+    isTouchActive.current = true;
+    setIsUserInteracting(true);
+    if (containerRef.current) {
+      preciseScrollTop.current = containerRef.current.scrollTop;
+    }
+  };
+
+  const handleTouchEnd = () => {
+    isTouchActive.current = false;
+    if (containerRef.current) {
+      preciseScrollTop.current = containerRef.current.scrollTop;
+    }
+    // Give user 2.2 seconds grace period to read where they manually scrolled
+    if (interactionTimeoutRef.current) clearTimeout(interactionTimeoutRef.current);
     interactionTimeoutRef.current = setTimeout(() => {
       setIsUserInteracting(false);
-    }, 1800);
+      if (containerRef.current) {
+        preciseScrollTop.current = containerRef.current.scrollTop;
+      }
+    }, 2200);
+  };
+
+  const handleWheel = () => {
+    setIsUserInteracting(true);
+    if (containerRef.current) {
+      preciseScrollTop.current = containerRef.current.scrollTop;
+    }
+    if (interactionTimeoutRef.current) clearTimeout(interactionTimeoutRef.current);
+    interactionTimeoutRef.current = setTimeout(() => {
+      setIsUserInteracting(false);
+      if (containerRef.current) {
+        preciseScrollTop.current = containerRef.current.scrollTop;
+      }
+    }, 2200);
+  };
+
+  const handleContainerScroll = () => {
+    // When user scrolls manually with touch or scrollbar, sync precise accumulator
+    if (isTouchActive.current || isUserInteracting) {
+      if (containerRef.current) {
+        preciseScrollTop.current = containerRef.current.scrollTop;
+      }
+    }
   };
 
   // Clear paused history when surah changes or auto-scroll starts
@@ -95,13 +152,19 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
   // 60 FPS Unified Auto-Scroll Engine (Voice Sync Gliding + Free Self-Reading)
   useEffect(() => {
     const isEngineActive = isAutoScrolling || (isPlayingAudio && isSmartScrollActive);
-    if (!isEngineActive || isAutoScrollPaused || isPausedAtAyah || isUserInteracting) return;
+    if (!isEngineActive || isAutoScrollPaused || isPausedAtAyah) return;
 
     let animId: number;
     let lastTime = performance.now();
     // Calibrated speed table for Arabic reading: px per second
-    const speedTable = [18, 32, 52, 80, 120];
-    const pxPerSec = speedTable[autoScrollSpeed - 1] || 32;
+    // 1x: 24px/s, 2x: 40px/s, 3x: 64px/s, 4x: 95px/s, 5x: 140px/s
+    const speedTable = [24, 40, 64, 95, 140];
+    const pxPerSec = speedTable[autoScrollSpeed - 1] || 40;
+
+    // Ensure accumulator starts from current scroll position
+    if (containerRef.current) {
+      preciseScrollTop.current = containerRef.current.scrollTop;
+    }
 
     const scrollLoop = (now: number) => {
       const container = containerRef.current;
@@ -109,6 +172,13 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
 
       const elapsed = (now - lastTime) / 1000;
       lastTime = now;
+
+      // Yield completely while user is touching or manually adjusting
+      if (isTouchActive.current || isUserInteracting) {
+        preciseScrollTop.current = container.scrollTop;
+        animId = requestAnimationFrame(scrollLoop);
+        return;
+      }
 
       // MODE 1: VOICE RECITATION TRACKER (المزامنة الذكية مع صوت وتلاوة الشيخ)
       if (isPlayingAudio && scrollMode === 'reciter-sync') {
@@ -141,24 +211,28 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
           const diff = targetScrollTop - container.scrollTop;
           if (Math.abs(diff) > 0.8) {
             container.scrollTop += diff * 0.08;
+            preciseScrollTop.current = container.scrollTop;
           }
         }
       }
-      // MODE 2: SELF-READING FREE SPEED (قراءة ذاتية حرة بسرعات متعددة مع وقفة التدبر)
+      // MODE 2: SELF-READING FREE SPEED (قراءة ذاتية حرة بسرعات 1 إلى 5 مع تراكم دقيق للبيكسلات)
       else {
         if (elapsed > 0 && elapsed < 0.2) {
-          container.scrollTop += pxPerSec * elapsed;
+          // Accumulate floating subpixel distance so speeds 1, 2, 3 never get truncated by browser DOM
+          preciseScrollTop.current += pxPerSec * elapsed;
 
           // Check if reached bottom of surah
-          if (
-            container.scrollTop + container.clientHeight >=
-            container.scrollHeight - 5
-          ) {
+          const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+          if (preciseScrollTop.current >= maxScroll - 4) {
+            container.scrollTop = maxScroll;
             setIsAutoScrolling(false);
             return;
           }
 
-          // Reflective pause at verse end symbols ﴿۝﴾
+          // Apply to DOM scroll position
+          container.scrollTop = preciseScrollTop.current;
+
+          // Reflective pause at verse end symbols ﴿۝﴾ (if user toggles it on)
           if (pauseAtAyahEnds) {
             const containerRect = container.getBoundingClientRect();
             const focalLine = containerRect.top + containerRect.height * 0.40;
@@ -178,6 +252,9 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
                   setTimeout(() => {
                     setIsPausedAtAyah(false);
                     setPausedAyahNumber(null);
+                    if (containerRef.current) {
+                      preciseScrollTop.current = containerRef.current.scrollTop;
+                    }
                   }, 1300);
                   return;
                 }
@@ -341,8 +418,8 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
             ) : (
               <>
                 <ChevronsDown className={`w-3.5 h-3.5 ${(isAutoScrolling || (isPlayingAudio && isSmartScrollActive)) ? 'animate-bounce text-slate-950' : 'text-emerald-400'}`} />
-                <span className="hidden sm:inline">{(isAutoScrolling || (isPlayingAudio && isSmartScrollActive)) ? 'التمرير يعمل ⚡' : 'قراءة ذاتية (سكرول)'}</span>
-                <span className="sm:hidden">{(isAutoScrolling || (isPlayingAudio && isSmartScrollActive)) ? 'سكرول ⚡' : 'سكرول'}</span>
+                <span className="hidden sm:inline">{(isAutoScrolling || (isPlayingAudio && isSmartScrollActive)) ? 'قراءة ذاتية تعمل ⚡' : 'قراءة ذاتية'}</span>
+                <span className="sm:hidden">{(isAutoScrolling || (isPlayingAudio && isSmartScrollActive)) ? 'قراءة آلية ⚡' : 'قراءة آلية'}</span>
               </>
             )}
           </button>
@@ -412,7 +489,7 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
             <button
               onClick={() => setIsAutoScrollPaused(!isAutoScrollPaused)}
               className="py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1.5 shadow-md shadow-emerald-900/40 transition-transform active:scale-95 shrink-0 cursor-pointer"
-              title={isAutoScrollPaused ? 'استئناف التمرير' : 'إيقاف مؤقت للتمرير'}
+              title={isAutoScrollPaused ? 'استئناف القراءة الذاتية' : 'إيقاف مؤقت للقراءة الذاتية'}
             >
               {isAutoScrollPaused ? <Play className="w-3.5 h-3.5 ml-0.5" /> : <Pause className="w-3.5 h-3.5" />}
               <span>{isAutoScrollPaused ? 'استئناف' : 'إيقاف مؤقت'}</span>
@@ -440,7 +517,7 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
                       : 'text-slate-400 hover:text-white'
                   }`}
-                  title="تحديد سرعة يدوية ثابتة للتمرير"
+                  title="تحديد سرعة يدوية ثابتة للقراءة الذاتية"
                 >
                   <span>سرعة حرة (1x-5x)</span>
                 </button>
@@ -450,7 +527,7 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
             {/* Manual Speed Selector pills (shown when not in voice sync mode, or not playing audio) */}
             {(!isPlayingAudio || scrollMode === 'manual-speed') && (
               <div className="flex items-center gap-1">
-                <span className="text-slate-400 text-[11px] font-semibold ml-1">السرعة:</span>
+                <span className="text-slate-400 text-[11px] font-semibold ml-1">سرعة القراءة:</span>
                 {[
                   { level: 1, label: '1x (متأنٍ جداً)', name: '1x' },
                   { level: 2, label: '2x (هادئ ومعتدل)', name: '2x' },
@@ -474,18 +551,18 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
               </div>
             )}
 
-            {/* Pause at verse ends indicator for manual mode */}
+            {/* Continuous flow vs Pause at verse ends indicator for manual mode */}
             {(!isPlayingAudio || scrollMode === 'manual-speed') && (
               <button
                 onClick={() => setPauseAtAyahEnds(!pauseAtAyahEnds)}
-                className={`py-1 px-2 rounded-xl border text-[11px] font-semibold transition-all cursor-pointer ${
-                  pauseAtAyahEnds
-                    ? 'bg-amber-500/20 border-amber-500 text-amber-300'
-                    : 'bg-slate-800 border-slate-700 text-slate-400'
+                className={`py-1 px-2.5 rounded-xl border text-[11px] font-semibold transition-all cursor-pointer ${
+                  !pauseAtAyahEnds
+                    ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold'
+                    : 'bg-amber-500/20 border-amber-500 text-amber-300'
                 }`}
-                title="التوقف المؤقت عند رأس كل آية ﴿﴾ للتدبر والتقاط الأنفاس"
+                title="التبديل بين الانسياب المستمر بدون توقف أو الوقوف عند رأس كل آية ﴿﴾"
               >
-                <span>{pauseAtAyahEnds ? 'توقف عند ﴿﴾ ✓' : 'انسياب مستمر'}</span>
+                <span>{!pauseAtAyahEnds ? 'انسياب مستمر (بدون توقف) ✓' : 'توقف عند ﴿﴾'}</span>
               </button>
             )}
           </div>
@@ -493,10 +570,26 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
           <div className="flex items-center gap-2">
             {/* Status indicator when user is interacting with touch/wheel */}
             {isUserInteracting ? (
-              <span className="text-[11px] text-sky-300 px-2.5 py-1 rounded-lg bg-sky-950/70 border border-sky-500/40 animate-pulse font-medium flex items-center gap-1">
-                <Hand className="w-3 h-3 text-sky-400" />
-                <span>تحكم يدوي مؤقت...</span>
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-sky-300 px-2.5 py-1 rounded-lg bg-sky-950/70 border border-sky-500/40 font-medium flex items-center gap-1">
+                  <Hand className="w-3 h-3 text-sky-400 animate-pulse" />
+                  <span>تحكم يدوي باللمس 👆</span>
+                </span>
+                <button
+                  onClick={() => {
+                    if (interactionTimeoutRef.current) clearTimeout(interactionTimeoutRef.current);
+                    isTouchActive.current = false;
+                    setIsUserInteracting(false);
+                    if (containerRef.current) {
+                      preciseScrollTop.current = containerRef.current.scrollTop;
+                    }
+                  }}
+                  className="py-1 px-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[10px] transition-all shadow-sm cursor-pointer"
+                  title="استئناف القراءة الذاتية فوراً من الموضع الحالي"
+                >
+                  استئناف الآن ⚡
+                </button>
+              </div>
             ) : isPlayingAudio && scrollMode === 'reciter-sync' ? (
               <span className="text-[11px] text-emerald-300 px-2.5 py-1 rounded-lg bg-emerald-950/70 border border-emerald-500/40 font-medium flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
@@ -518,9 +611,9 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
                 }
               }}
               className="py-1 px-2.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-colors cursor-pointer text-[11px]"
-              title="إغلاق التمرير التلقائي"
+              title="إيقاف القراءة الذاتية"
             >
-              إلغاء التمرير ✕
+              إيقاف القراءة الآلية ✕
             </button>
           </div>
         </div>
@@ -529,10 +622,12 @@ export const QuranReader: React.FC<QuranReaderProps> = ({
       {/* Main Reading Frame (Mus'haf Page Layout) */}
       <div
         ref={containerRef}
-        onWheel={handleUserInteraction}
-        onTouchStart={handleUserInteraction}
-        onTouchMove={handleUserInteraction}
-        className={`relative rounded-3xl p-6 sm:p-10 border-2 shadow-2xl transition-all duration-300 overflow-y-auto max-h-[75vh] ${getThemeClasses()}`}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onScroll={handleContainerScroll}
+        className={`relative rounded-3xl p-6 sm:p-10 border-2 shadow-2xl transition-all duration-300 overflow-y-auto max-h-[75vh] overscroll-contain ${getThemeClasses()}`}
       >
         {/* Decorative Corner Ornaments */}
         <div
